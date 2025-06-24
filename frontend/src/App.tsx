@@ -13,11 +13,11 @@ function App() {
 
 	/**
 	 * @example
-	 *	window.crypt -> generate random val i.e token, nonces 
+	 *	window.crypto -> generate random val i.e token, nonces 
 	 *	hash password
 	 *	enc/decr info
 	 *	sign/verify mssgs
-	 *	generateKey() -> Random key to encrypt the data.
+	 *	generateKey() -> Random crypto key/object to encrypt/decrypt the data.
 	 *
 	 **/
 	const generateKey = async () => {
@@ -42,6 +42,44 @@ function App() {
 		)
 	}
 
+	// Decrypt data
+	const decryptData = async (encryptedData: ArrayBuffer, key: CryptoKey) => {
+		const iv = new Uint8Array(12);
+
+		const decrypted = await window.crypto.subtle.decrypt(
+			{ name: "AES-GCM", iv: iv },
+			key,
+			encryptedData
+		);
+
+		const decoder = new TextDecoder();
+		return JSON.parse(decoder.decode(decrypted));
+	};
+
+	// extract a base64 instead of having a binary encoded one
+	const exportKey = async (key: CryptoKey) => {
+		const exported = await window.crypto.subtle.exportKey("jwk", key);
+		return exported.k;
+	};
+
+	// back to binary object from base64
+	const importKey = async (key: string) => {
+		const imported = await window.crypto.subtle.importKey(
+			"jwk",
+			{
+				k: key,
+				alg: "A128GCM",
+				ext: true,
+				key_ops: ["encrypt", "decrypt"],
+				kty: "oct",
+			},
+			{ name: "AES-GCM", length: 128 },
+			false, // extractable
+			["decrypt"],
+		)
+		return imported
+	}
+
 	const uploadData = async () => {
 		if (!data.trim()) {
 			setStatus("Please share some data to encrypt and share!")
@@ -52,11 +90,9 @@ function App() {
 		setStatus("Encrypting and uploading")
 
 		try {
-			const id = await generateKey()
+			const key = await generateKey()
 
-			const encryptedData = await encryptData(data, id)
-
-			console.log("encrypted data: ", encryptedData)
+			const encryptedData = await encryptData(data, key)
 
 			const response = await fetch(`${BASE_URL}/upload`, {
 				method: "POST",
@@ -71,8 +107,10 @@ function App() {
 			}
 
 			const res = await response.json()
+			const parsedJwkKey = await exportKey(key)
+			const exportUrl = `${window.location.origin}/scane/${res.id}#key=${parsedJwkKey}`
 
-			console.log("response res: ", res)
+			setShareableUrl(exportUrl)
 			setLoading(false)
 		} catch (err) {
 			if (err instanceof Error) {
@@ -83,12 +121,47 @@ function App() {
 		}
 	}
 
-	const loadSharedData = () => {
+	const loadSharedData = async (id: string, key: string | null) => {
+		setLoading(true);
+		setStatus('Downloading and decrypting...');
 
+		try {
+			const response = await fetch(`${BASE_URL}/download/${id}`)
+
+			if (!response.ok) {
+				throw new Error("Failed to download data")
+			}
+
+			// raw binary content of this response
+			const data = await response.arrayBuffer()
+
+			const bufferKey = await importKey(key!)
+
+			// decrypt the data
+			const decrypted = await decryptData(data, bufferKey)
+			setDecryptedData(decrypted);
+			setStatus('✅ Data decrypted successfully!');
+		} catch (err) {
+			if (err instanceof Error) {
+				console.log(err.message)
+				setStatus(`❌ Decryption error: ${err.message}`);
+			}
+		} finally {
+			setLoading(false)
+		}
 	}
 
 	const loadFromUrl = () => {
+		const url = new URL(urlToLoad)
+		const splitedPathnames = url.pathname.split('/')
+		const id = splitedPathnames[splitedPathnames.length - 1]
 
+		if (url.hash.includes('#key=')) {
+			const urlParams = new URLSearchParams(url.hash.substring(1))
+			const key = urlParams.get("key")
+
+			loadSharedData(id, key)
+		}
 	}
 
 
@@ -200,29 +273,6 @@ function App() {
 						<p className="text-center text-gray-700">{status}</p>
 					</div>
 				)}
-
-				{/* How it works */}
-				<div className="mt-8 bg-yellow-50 rounded-lg p-6">
-					<h3 className="text-lg font-semibold mb-3 flex items-center">
-						<Key className="mr-2" /> How it works:
-					</h3>
-					<div className="text-sm text-gray-700 space-y-2">
-						<p>• <strong>Client-side encryption:</strong> Data is encrypted in your browser before upload</p>
-						<p>• <strong>Key in URL hash:</strong> Encryption key is stored after the # symbol (never sent to server)</p>
-						<p>• <strong>Server is blind:</strong> Server only stores encrypted blobs, cannot decrypt them</p>
-						<p>• <strong>Secure sharing:</strong> Only people with the full URL can decrypt the data</p>
-					</div>
-				</div>
-
-				<div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg">
-					<div className="flex items-start">
-						<AlertCircle className="h-5 w-5 text-red-500 mt-0.5 mr-2" />
-						<div className="text-sm text-red-700">
-							<strong>Important:</strong> This is a demo. In production, use proper IV generation,
-							key derivation, and consider additional security measures like key rotation.
-						</div>
-					</div>
-				</div>
 			</div>
 		</div>
 	)
